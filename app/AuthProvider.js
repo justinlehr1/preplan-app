@@ -7,10 +7,7 @@ const AuthContext = createContext(null);
 
 // A signed-in crew member may stay offline for at most this long. After it, the
 // app forces a fresh online login. This is the backstop for a lost phone.
-//
-// ⚠️ TEMPORARY TEST VALUE — 3 minutes so the lock-out can be watched on a phone.
-//    Revert to 7 days before real use:  7 * 24 * 60 * 60 * 1000
-const MAX_OFFLINE_MS = 3 * 60 * 1000; // 3 minutes (TEST)
+const MAX_OFFLINE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
 // Timestamp (ms) of the last time the SERVER confirmed this login.
 const LAST_VERIFIED_KEY = "preplan-last-verified";
@@ -66,6 +63,7 @@ function isAuthError(error) {
   const status = typeof error.status === "number" ? error.status : null;
   if (status === null || status === 0) return false; // unknown -> treat as network
   if (status >= 500) return false; // server-side hiccup, not the user's fault
+  if (status === 408 || status === 429) return false; // timeout / rate limit -> transient, never wipe
   return status >= 400; // 400/401/403/404/422 -> token or user rejected
 }
 
