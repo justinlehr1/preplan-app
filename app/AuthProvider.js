@@ -5,21 +5,22 @@ import { supabase } from "@/lib/supabase";
 
 const AuthContext = createContext(null);
 
-// A signed-in crew member may stay offline for at most this long. After it,
-// the app forces a fresh online login. This is the backstop for a lost phone.
-const MAX_OFFLINE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+// A signed-in crew member may stay offline for at most this long. After it, the
+// app forces a fresh online login. This is the backstop for a lost phone.
+//
+// ⚠️ TEMPORARY TEST VALUE — 3 minutes so the lock-out can be watched on a phone.
+//    Revert to 7 days before real use:  7 * 24 * 60 * 60 * 1000
+const MAX_OFFLINE_MS = 3 * 60 * 1000; // 3 minutes (TEST)
 
-// Timestamp (ms) of the last time we confirmed this login against the server.
+// Timestamp (ms) of the last time the SERVER confirmed this login.
 const LAST_VERIFIED_KEY = "preplan-last-verified";
 
 // Cached responses whose name starts with this are app CODE (no secrets) and
 // must survive sign-out so the login screen still loads with no signal.
-// Anything else (future building-data caches) is wiped on sign-out.
+// Any future building-data cache MUST use a different name (e.g. "preplan-data")
+// so that clearLocalData() below deletes it on sign-out.
 const SHELL_CACHE_PREFIX = "preplan-cache";
 
-// Supabase stores the session in the browser under a key derived from the
-// project ref. Reading it directly lets us recognise an already-signed-in
-// crew member who currently has no signal to re-verify.
 function sessionStorageKey() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL ?? "";
   const projectRef = url.replace(/^https?:\/\//, "").split(".")[0];
@@ -57,14 +58,20 @@ function isOfflineExpired() {
   }
 }
 
+// True only when the error is a real server rejection of the token/user
+// (deleted, disabled, invalid) — NOT a connectivity problem.
+function isAuthError(error) {
+  if (!error) return false;
+  if (error.name === "AuthRetryableFetchError") return false; // network/connectivity
+  const status = typeof error.status === "number" ? error.status : null;
+  if (status === null || status === 0) return false; // unknown -> treat as network
+  if (status >= 500) return false; // server-side hiccup, not the user's fault
+  return status >= 400; // 400/401/403/404/422 -> token or user rejected
+}
+
 // Wipe every trace of sensitive data from this device, keeping only the
-// app-shell code so the login screen still works offline.
-async function purgeDeviceData() {
-  try {
-    await supabase.auth.signOut({ scope: "local" });
-  } catch {
-    // ignore — we clear storage below regardless
-  }
+// app-shell CODE so the login screen still works offline.
+async function clearLocalData() {
   try {
     window.localStorage.clear();
   } catch {
@@ -75,7 +82,6 @@ async function purgeDeviceData() {
   } catch {
     // ignore
   }
-  // Structured storage — where building data and photos will live later.
   try {
     if (window.indexedDB?.databases) {
       const dbs = await window.indexedDB.databases();
@@ -86,7 +92,6 @@ async function purgeDeviceData() {
   } catch {
     // ignore
   }
-  // Cached responses — delete everything except the app-shell code.
   try {
     if (typeof caches !== "undefined") {
       const names = await caches.keys();
@@ -99,6 +104,25 @@ async function purgeDeviceData() {
   }
 }
 
+// Actually contacts the server. getSession() first refreshes an expired token
+// (a refresh failure for a revoked/deleted account surfaces as SIGNED_OUT and
+// is purged by the listener). getUser() then confirms the account still exists.
+// Returns "ok" | "invalid" | "network".
+async function verifyWithServer() {
+  try {
+    await supabase.auth.getSession();
+    const { data, error } = await supabase.auth.getUser();
+    if (error) return isAuthError(error) ? "invalid" : "network";
+    if (data?.user) {
+      markVerified(); // the only place the 7-day clock is reset
+      return "ok";
+    }
+    return "invalid";
+  } catch {
+    return "network";
+  }
+}
+
 export function AuthProvider({ children }) {
   const [session, setSession] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -106,9 +130,23 @@ export function AuthProvider({ children }) {
   useEffect(() => {
     let active = true;
 
+    // Revoked account, expired offline window, or explicit lock-out: wipe device.
     async function forceReauth() {
-      await purgeDeviceData();
+      try {
+        await supabase.auth.signOut({ scope: "local" });
+      } catch {
+        // ignore
+      }
+      await clearLocalData();
       if (active) setSession(null);
+    }
+
+    async function verifyOnline() {
+      const result = await verifyWithServer();
+      if (!active) return;
+      if (result === "invalid") await forceReauth();
+      // "network" -> keep session, do NOT reset the clock
+      // "ok"      -> clock already reset inside verifyWithServer
     }
 
     async function init() {
@@ -120,18 +158,17 @@ export function AuthProvider({ children }) {
         current = null;
       }
       if (!current) current = readStoredSession();
-
       if (!active) return;
 
-      // Enforce the 7-day offline limit before trusting a stored login.
       if (current && isOfflineExpired()) {
         await forceReauth();
         return;
       }
 
       setSession(current);
-      if (current && navigator.onLine) markVerified();
       setLoading(false);
+
+      if (current && navigator.onLine) await verifyOnline();
     }
 
     init();
@@ -139,18 +176,23 @@ export function AuthProvider({ children }) {
     const { data: listener } = supabase.auth.onAuthStateChange((event, nextSession) => {
       if (!active) return;
 
+      // A definitive server sign-out (explicit, revoked user, invalid refresh
+      // token) wipes the device — not just the in-memory session.
       if (event === "SIGNED_OUT") {
-        // Only an explicit sign-out or a revoked/invalid session clears us.
+        clearLocalData();
         setSession(null);
-      } else if (nextSession) {
-        setSession(nextSession);
-        // A session confirmed while online resets the offline clock.
-        if (navigator.onLine) markVerified();
+        setLoading(false);
+        return;
       }
-      // A null session from a background token-refresh failure is ignored on
-      // purpose: it must never boot a firefighter out of the app at a scene.
 
+      if (nextSession) setSession(nextSession);
       setLoading(false);
+
+      // These events mean the server was just contacted successfully; confirm
+      // the account with getUser (which is what resets the offline clock).
+      if ((event === "SIGNED_IN" || event === "TOKEN_REFRESHED") && nextSession && navigator.onLine) {
+        verifyOnline();
+      }
     });
 
     // Reaching the internet again: re-check the offline limit, then re-verify.
@@ -160,23 +202,19 @@ export function AuthProvider({ children }) {
         await forceReauth();
         return;
       }
-      try {
-        const { data } = await supabase.auth.getSession();
-        if (active && data.session) {
-          setSession(data.session);
-          markVerified();
-        }
-      } catch {
-        // still effectively offline — leave the session as-is
-      }
+      await verifyOnline();
     }
 
-    // App brought back to the foreground: a lost phone that has sat past the
-    // limit gets wiped here even if it is still offline.
-    function handleVisible() {
-      if (document.visibilityState === "visible" && isOfflineExpired()) {
-        forceReauth();
+    // App brought back to the foreground: enforce the offline limit (this wipes
+    // a lost phone that has sat past the limit even while still offline) and,
+    // when online, re-verify the account against the server.
+    async function handleVisible() {
+      if (document.visibilityState !== "visible") return;
+      if (isOfflineExpired()) {
+        await forceReauth();
+        return;
       }
+      if (navigator.onLine) await verifyOnline();
     }
 
     window.addEventListener("online", handleOnline);
@@ -196,7 +234,18 @@ export function AuthProvider({ children }) {
     loading,
     signIn: (email, password) => supabase.auth.signInWithPassword({ email, password }),
     signOut: async () => {
-      await purgeDeviceData();
+      try {
+        // Online: default (global) scope revokes the refresh token on the
+        // server so the account can't be resumed elsewhere. Offline: local only.
+        await supabase.auth.signOut(navigator.onLine ? {} : { scope: "local" });
+      } catch {
+        try {
+          await supabase.auth.signOut({ scope: "local" });
+        } catch {
+          // ignore
+        }
+      }
+      await clearLocalData();
       setSession(null);
     },
   };
