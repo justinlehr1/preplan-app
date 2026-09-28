@@ -8,7 +8,8 @@
     "start": "next start",
     "lint": "eslint",
     "check:db": "node --env-file=.env.local scripts/check-supabase.mjs",
-    "check:security": "node --env-file=.env.local scripts/check-security.mjs"
+    "check:security": "node --env-file=.env.local scripts/check-security.mjs",
+    "check:buildings": "node --env-file=.env.local scripts/check-buildings.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.110.8",
