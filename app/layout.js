@@ -1,6 +1,9 @@
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import ServiceWorkerRegister from "./ServiceWorkerRegister";
+import { AuthProvider } from "./AuthProvider";
+import AuthGate from "./AuthGate";
+import OfflineBanner from "./OfflineBanner";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -43,8 +46,11 @@ export default function RootLayout({ children }) {
       lang="en"
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
-      <body className="min-h-full flex flex-col">
-        {children}
+      <body className="min-h-full flex flex-col bg-black">
+        <OfflineBanner />
+        <AuthProvider>
+          <AuthGate>{children}</AuthGate>
+        </AuthProvider>
         <ServiceWorkerRegister />
       </body>
     </html>
