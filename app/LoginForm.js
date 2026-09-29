@@ -1,7 +1,9 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useAuth } from "./AuthProvider";
+
+const SIGNOUT_REASON_KEY = "preplan-signout-reason";
 
 function friendlyError(message) {
   if (/invalid login credentials/i.test(message)) {
@@ -22,6 +24,16 @@ export default function LoginForm() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState(null);
   const [submitting, setSubmitting] = useState(false);
+  const [signoutReason, setSignoutReason] = useState(null);
+
+  useEffect(() => {
+    try {
+      const reason = window.localStorage.getItem(SIGNOUT_REASON_KEY);
+      if (reason) setSignoutReason(reason);
+    } catch {
+      // ignore
+    }
+  }, []);
 
   async function handleSubmit(event) {
     event.preventDefault();
@@ -46,6 +58,12 @@ export default function LoginForm() {
         <p className="mt-2 text-center text-sm text-zinc-500">
           Sign in to access building information
         </p>
+
+        {signoutReason ? (
+          <p className="mt-6 rounded-lg border border-zinc-800 bg-zinc-900 px-4 py-3 text-center text-xs text-zinc-400">
+            {signoutReason}
+          </p>
+        ) : null}
 
         <form onSubmit={handleSubmit} className="mt-8 flex flex-col gap-4">
           <label className="flex flex-col gap-2">
