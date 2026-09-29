@@ -162,17 +162,12 @@ export default function BuildingDetail() {
               ⚠ Occupants on Oxygen
             </div>
           ) : null}
-
-          {building.hazard_summary ? (
-            <div className="mx-5 mb-3 rounded-lg border border-red-800 bg-red-950 px-4 py-3 text-lg font-bold leading-snug text-red-300">
-              ⚠ {building.hazard_summary}
-            </div>
-          ) : null}
-
-          <Field label="Type & Construction" value={typeLine} />
           <Field label="Medical Needs" value={building.medical_notes} danger />
 
+          <Field label="Hazards" value={building.hazards} danger />
+
           <CodesField value={building.access_codes} />
+          <Field label="Knox Box" value={building.knox_box} />
 
           {hasFireProtection ? (
             <div className="border-b border-zinc-800 bg-zinc-950 px-5 pt-5 pb-1">
@@ -187,8 +182,7 @@ export default function BuildingDetail() {
           <Field label="Standpipe" value={standpipe} />
           <Field label="Fire Alarm Panel" value={building.fire_alarm_panel} />
 
-          <Field label="Knox Box" value={building.knox_box} />
-          <Field label="Hazards" value={building.hazards} danger />
+          <Field label="Type & Construction" value={typeLine} />
           <Field label="Utility Shutoffs" value={building.utility_shutoffs} />
           <Field label="Notes" value={building.layout_notes} />
           <Field label="Emergency Contacts" value={building.emergency_contacts} />
